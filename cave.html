@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Caverna Submarina — D3.js</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #010810; font-family: 'Segoe UI', sans-serif; }
+    svg { display: block; }
+    .creature { cursor: pointer; }
+    .creature:hover { filter: brightness(1.15); }
+
+    #controls {
+      position: fixed; bottom: 24px; right: 24px;
+      display: flex; flex-direction: column; gap: 8px; z-index: 10;
+    }
+    #controls button {
+      width: 44px; height: 44px; border: none; border-radius: 10px;
+      background: rgba(20, 50, 80, 0.7); color: #8cc8ff;
+      font-size: 22px; cursor: pointer; backdrop-filter: blur(8px);
+      border: 1px solid rgba(100, 180, 255, 0.15);
+      transition: background 0.2s, transform 0.1s;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: bold; line-height: 1;
+    }
+    #controls button:hover { background: rgba(30, 80, 130, 0.85); transform: scale(1.08); }
+    #controls button:active { transform: scale(0.95); }
+
+    #minimap {
+      position: fixed; top: 16px; right: 16px; z-index: 10;
+      border: 1px solid rgba(100, 180, 255, 0.2); border-radius: 8px;
+      background: rgba(5, 15, 30, 0.8); backdrop-filter: blur(6px);
+      overflow: hidden;
+    }
+
+    #hint {
+      position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+      color: rgba(140, 200, 255, 0.6); font-size: 13px;
+      pointer-events: none; transition: opacity 2s; text-align: center;
+      text-shadow: 0 1px 6px rgba(0,0,0,0.5);
+    }
+
+    #label {
+      position: fixed; top: 16px; left: 20px; z-index: 10;
+      color: rgba(140, 200, 255, 0.4); font-size: 11px; letter-spacing: 1px;
+      text-transform: uppercase; pointer-events: none;
+    }
+
+    #zoomLevel {
+      position: fixed; bottom: 80px; right: 28px; z-index: 10;
+      color: rgba(140, 200, 255, 0.4); font-size: 11px;
+      pointer-events: none; text-align: center; width: 36px;
+    }
+  </style>
+</head>
+<body>
+  <div id="label">Underwater Cave System</div>
+  <div id="hint">scroll to zoom · drag background to pan · drag any creature to move it</div>
+  <div id="zoomLevel">1.0x</div>
+  <div id="controls">
+    <button id="zoomIn" title="Zoom in">+</button>
+    <button id="zoomOut" title="Zoom out">−</button>
+    <button id="zoomFit" title="Fit to screen">⊡</button>
+  </div>
+  <canvas id="minimap" width="200" height="120"></canvas>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+  (function() {
+    const WORLD_W = 7000, WORLD_H = 5000;
+    const W = window.innerWidth, H = window.innerHeight;
+
+    const svg = d3.select("body").append("svg").attr("width", W).attr("height", H);
+    const defs = svg.append("defs");
+
+    function addGrad(id, type, stops, attrs = {}) {
+      const g = defs.append(type === "r" ? "radialGradient" : "linearGradient").attr("id", id);
+      Object.entries(attrs).forEach(([k, v]) => g.attr(k, v));
+      stops.forEach(s => g.append("stop").attr("offset", s[0]).attr("stop-color", s[1]).attr("stop-opacity", s[2] ?? 1));
+    }
+
+    addGrad("sharkBody", "r", [["0%","#8899aa"],["60%","#5a6a7a"],["100%","#3a4a5a"]], {cx:"55%",cy:"40%",r:"65%"});
+    addGrad("octoBody", "r", [["0%","#d45e8a"],["60%","#a33a6a"],["100%","#7a2050"]], {cx:"50%",cy:"40%",r:"60%"});
+    addGrad("turtleBody", "r", [["0%","#5aaa5a"],["70%","#3a7a3a"],["100%","#2a5a2a"]], {cx:"50%",cy:"45%",r:"60%"});
+    addGrad("jellyBody", "r", [["0%","rgba(160,200,255,0.7)"],["100%","rgba(100,140,220,0.3)"]], {cx:"50%",cy:"30%",r:"70%"});
+    addGrad("eelBody", "l", [["0%","#4a6a30"],["50%","#6a8a40"],["100%","#4a6a30"]], {x1:"0%",y1:"0%",x2:"100%",y2:"0%"});
+    addGrad("goldfish", "r", [["0%","#ffd166"],["60%","#f4a940"],["100%","#d4841e"]], {cx:"60%",cy:"40%",r:"60%"});
+    addGrad("biolum", "r", [["0%","rgba(80,220,180,0.5)"],["100%","rgba(80,220,180,0)"]], {cx:"50%",cy:"50%",r:"50%"});
+    addGrad("coralA", "r", [["0%","#ff6a6a"],["100%","#aa3030"]], {cx:"50%",cy:"30%",r:"70%"});
+    addGrad("coralB", "r", [["0%","#ff9a40"],["100%","#aa6020"]], {cx:"50%",cy:"30%",r:"70%"});
+    addGrad("coralC", "r", [["0%","#c070e0"],["100%","#7030a0"]], {cx:"50%",cy:"30%",r:"70%"});
+
+    const shadow = defs.append("filter").attr("id","shadow").attr("x","-50%").attr("y","-50%").attr("width","200%").attr("height","200%");
+    shadow.append("feDropShadow").attr("dx",0).attr("dy",3).attr("stdDeviation",5).attr("flood-color","rgba(0,0,0,0.4)");
+
+    const glow = defs.append("filter").attr("id","glow").attr("x","-50%").attr("y","-50%").attr("width","200%").attr("height","200%");
+    glow.append("feGaussianBlur").attr("stdDeviation","4").attr("result","b");
+    const gm = glow.append("feMerge"); gm.append("feMergeNode").attr("in","b"); gm.append("feMergeNode").attr("in","SourceGraphic");
+
+    // ─── ZOOM ───
+    const world = svg.append("g");
+    let minimapReady = false;
+    const MAX_ZOOM = W / WORLD_W;
+    const MIN_ZOOM = 0.12;
+
+    const zoomBehavior = d3.zoom()
+      .scaleExtent([MIN_ZOOM, MAX_ZOOM])
+      .on("zoom", e => {
+        world.attr("transform", e.transform);
+        d3.select("#zoomLevel").text(e.transform.k.toFixed(1) + "x");
+        if (minimapReady) updateMinimap();
+      });
+
+    // ─── CAVE LEVELS ───
+    // Level 1 (upper): y 0–1800   — bright reef area
+    // Level 2 (mid):   y 1800–3400 — dark deep zone
+    // Level 3 (lower): y 3400–5000 — abyss / bioluminescent
+    // Rooms across X: divided by pillars at x ~1700, 3500, 5200
+
+    // background water - darker as you go deeper
+    world.append("rect").attr("x",-300).attr("y",-300).attr("width",WORLD_W+600).attr("height",WORLD_H+600).attr("fill","#020a14");
+
+    // depth bands
+    [[0, 1800, "#0d3b66", 0.5], [0, 1800, "#0a3050", 0.3],
+     [1800, 1600, "#061e3a", 0.5], [1800, 1600, "#041530", 0.3],
+     [3400, 1900, "#020c18", 0.6], [3400, 1900, "#01080f", 0.3]].forEach(([y, h, col, op]) => {
+      world.append("rect").attr("x",-100).attr("y",y).attr("width",WORLD_W+200).attr("height",h).attr("fill",col).attr("opacity",op);
+    });
+
+    const caveGroup = world.append("g");
+
+    // ─── HORIZONTAL CAVE SHELVES (level dividers) ───
+    function makeShelf(y, fromX, toX, thickness, color) {
+      const p = d3.path();
+      p.moveTo(fromX, y);
+      for (let x = fromX; x <= toX; x += 60) {
+        p.quadraticCurveTo(x + 30, y + (Math.random() - 0.5) * thickness, x + 60, y + (Math.random() - 0.5) * thickness * 0.5);
+      }
+      p.lineTo(toX, y + thickness);
+      for (let x = toX; x >= fromX; x -= 60) {
+        p.quadraticCurveTo(x - 30, y + thickness + (Math.random() - 0.5) * thickness * 0.3, x - 60, y + thickness + (Math.random() - 0.3) * thickness * 0.2);
+      }
+      p.closePath();
+      caveGroup.append("path").attr("d", p.toString()).attr("fill", color);
+    }
+
+    // level 1/2 divider - with gaps for passage
+    makeShelf(1750, -100, 1200, 100, "#0e1210");
+    makeShelf(1780, 1600, 3100, 80, "#101410");
+    makeShelf(1760, 3500, 5000, 90, "#0e1210");
+    makeShelf(1770, 5400, WORLD_W + 100, 85, "#101410");
+
+    // level 2/3 divider - with gaps
+    makeShelf(3350, -100, 900, 90, "#0a0e0a");
+    makeShelf(3380, 1300, 2800, 80, "#0c100c");
+    makeShelf(3360, 3200, 4800, 95, "#0a0e0a");
+    makeShelf(3370, 5200, WORLD_W + 100, 85, "#0c100c");
+
+    // outer walls - top
+    const topWall = d3.path();
+    topWall.moveTo(-300, -300); topWall.lineTo(WORLD_W + 300, -300); topWall.lineTo(WORLD_W + 300, 120);
+    for (let x = WORLD_W + 300; x >= -300; x -= 80) topWall.quadraticCurveTo(x - 40, 80 + Math.random() * 100, x - 80, 100 + Math.random() * 60);
+    topWall.closePath();
+    caveGroup.append("path").attr("d", topWall.toString()).attr("fill", "#0a0a0c");
+
+    // outer walls - bottom
+    const botWall = d3.path();
+    botWall.moveTo(-300, WORLD_H + 300); botWall.lineTo(WORLD_W + 300, WORLD_H + 300); botWall.lineTo(WORLD_W + 300, WORLD_H - 120);
+    for (let x = WORLD_W + 300; x >= -300; x -= 80) botWall.quadraticCurveTo(x - 40, WORLD_H - 80 - Math.random() * 100, x - 80, WORLD_H - 100 - Math.random() * 60);
+    botWall.closePath();
+    caveGroup.append("path").attr("d", botWall.toString()).attr("fill", "#1a2e20");
+
+    // left/right walls
+    [[-300, -300, 80], [WORLD_W + 100, -300, 200]].forEach(([x, y, w]) => {
+      caveGroup.append("rect").attr("x", x).attr("y", y).attr("width", w).attr("height", WORLD_H + 600).attr("fill", "#0a0a0c");
+    });
+
+    // ─── VERTICAL PILLARS between rooms ───
+    const pillarXs = [1700, 3500, 5200];
+    pillarXs.forEach(px => {
+      // pillar sections with gaps between levels
+      [[100, 700], [1000, 1750], [1850, 2600], [2900, 3350], [3450, 4200], [4500, WORLD_H - 120]].forEach(([yTop, yBot]) => {
+        if (Math.random() > 0.35) {
+          const w = 60 + Math.random() * 80;
+          caveGroup.append("path")
+            .attr("d", `M${px - w / 2},${yTop} Q${px},${yTop + 30} ${px + w / 2},${yTop}
+                         L${px + w * 0.3},${yBot} Q${px},${yBot - 20} ${px - w * 0.3},${yBot} Z`)
+            .attr("fill", d3.interpolateRgb("#111118", "#0a0a10")(Math.random()));
+        }
+      });
+    });
+
+    // ─── STALACTITES & STALAGMITES per level ───
+    function addSpikes(yBase, dir, count, xMin, xMax, color1, color2) {
+      d3.range(count).forEach(() => {
+        const x = xMin + Math.random() * (xMax - xMin);
+        const len = 15 + Math.random() * 80;
+        const w = 3 + Math.random() * 12;
+        const yTip = dir === "down" ? yBase + len : yBase - len;
+        caveGroup.append("path")
+          .attr("d", `M${x - w},${yBase} Q${x},${yTip} ${x + w},${yBase}`)
+          .attr("fill", d3.interpolateRgb(color1, color2)(Math.random()));
+      });
+    }
+
+    // level 1 ceiling stalactites
+    addSpikes(120, "down", 50, 0, WORLD_W, "#1a1a22", "#0e0e14");
+    // level 1/2 shelf stalactites (hanging) and stalagmites (growing up from shelf top)
+    addSpikes(1750, "up", 30, 0, WORLD_W, "#1a2a1a", "#0e180e");
+    addSpikes(1850, "down", 30, 0, WORLD_W, "#101810", "#0a100a");
+    // level 2/3 shelf
+    addSpikes(3350, "up", 25, 0, WORLD_W, "#0e160e", "#080e08");
+    addSpikes(3450, "down", 25, 0, WORLD_W, "#0a0e0a", "#060a06");
+    // bottom floor stalagmites
+    addSpikes(WORLD_H - 120, "up", 40, 0, WORLD_W, "#2a4530", "#1a3020");
+
+    // ─── ROCKS per level ───
+    function addRocks(yBase, count) {
+      d3.range(count).forEach(() => {
+        caveGroup.append("ellipse")
+          .attr("cx", Math.random() * WORLD_W).attr("cy", yBase + (Math.random() - 0.5) * 30)
+          .attr("rx", 10 + Math.random() * 40).attr("ry", 8 + Math.random() * 20)
+          .attr("fill", d3.interpolateRgb("#222a22", "#181e18")(Math.random()))
+          .attr("opacity", 0.5 + Math.random() * 0.4);
+      });
+    }
+    addRocks(1750, 20);
+    addRocks(3350, 20);
+    addRocks(WORLD_H - 120, 25);
+
+    // ─── LIGHT SHAFTS (only in level 1) ───
+    const lightsGroup = world.append("g");
+    d3.range(12).forEach(i => {
+      const x = 200 + (i / 12) * (WORLD_W - 400);
+      const spread = 40 + Math.random() * 60;
+      lightsGroup.append("polygon")
+        .attr("points", `${x},-50 ${x - spread * 2.5},${1700} ${x + spread * 2.5},${1700}`)
+        .attr("fill", `rgba(120,200,255,${0.02 + Math.random() * 0.03})`)
+        .attr("class", "shaft");
+    });
+
+    // ─── BIOLUMINESCENT SPOTS (mostly in level 3) ───
+    const bioGroup = world.append("g");
+    d3.range(40).forEach(() => {
+      const inL3 = Math.random() > 0.3;
+      const y = inL3 ? 3500 + Math.random() * 1300 : 300 + Math.random() * 4400;
+      bioGroup.append("circle")
+        .attr("cx", Math.random() * WORLD_W).attr("cy", y)
+        .attr("r", 20 + Math.random() * (inL3 ? 80 : 40))
+        .attr("fill", `rgba(${inL3 ? "80,220,180" : "60,150,200"},${inL3 ? 0.4 : 0.15})`)
+        .attr("filter", "url(#glow)")
+        .attr("class", "bio").datum({ phase: Math.random() * Math.PI * 2 });
+    });
+
+    // ─── CORAL (level 1 and top of shelves) ───
+    const coralGroup = world.append("g");
+    const coralGrads = ["url(#coralA)", "url(#coralB)", "url(#coralC)"];
+    function addCorals(yBase, count) {
+      d3.range(count).forEach(() => {
+        const x = Math.random() * WORLD_W;
+        const branches = 3 + Math.floor(Math.random() * 5);
+        const cg = coralGroup.append("g").attr("transform", `translate(${x}, ${yBase})`);
+        for (let b = 0; b < branches; b++) {
+          const bx = (b - branches / 2) * (6 + Math.random() * 10);
+          const bh = 15 + Math.random() * 50;
+          const bw = 3 + Math.random() * 7;
+          cg.append("path")
+            .attr("d", `M${bx - bw},0 Q${bx},${-bh} ${bx + bw},0 Z`)
+            .attr("fill", coralGrads[Math.floor(Math.random() * 3)])
+            .attr("opacity", 0.6 + Math.random() * 0.4);
+        }
+      });
+    }
+    addCorals(1740, 25);
+    addCorals(3340, 15);
+    addCorals(WORLD_H - 130, 20);
+
+    // ─── SEAWEED ───
+    const seaweedGroup = world.append("g");
+    const swColors = ["#1a6b3c", "#2a8a4c", "#0f5a2a", "#247a42"];
+    function addSeaweed(yBase, count) {
+      d3.range(count).forEach(() => {
+        const x = Math.random() * WORLD_W;
+        const segs = 3 + Math.floor(Math.random() * 5);
+        const segH = 14;
+        const pts = [];
+        for (let i = 0; i <= segs; i++) pts.push({ x: 0, y: -i * segH, sway: (Math.random() - 0.5) * 12 });
+        const col = swColors[Math.floor(Math.random() * swColors.length)];
+        for (let w = 0; w < 2; w++) {
+          const off = (w - 0.5) * 5;
+          const line = d3.line().x(d => d.x + d.sway).y(d => d.y).curve(d3.curveBasis);
+          seaweedGroup.append("path")
+            .attr("d", line(pts.map(p => ({ ...p, x: p.x + off, sway: p.sway + off * 0.4 }))))
+            .attr("stroke", col).attr("stroke-width", 3 - w * 0.6).attr("fill", "none").attr("opacity", 0.6)
+            .attr("class", "seaweed").attr("transform", `translate(${x}, ${yBase})`)
+            .datum({ phase: Math.random() * Math.PI * 2, pts, baseOff: off });
+        }
+      });
+    }
+    addSeaweed(1740, 35);
+    addSeaweed(3340, 20);
+    addSeaweed(WORLD_H - 130, 30);
+
+    // ─── BUBBLES ───
+    const bubData = d3.range(100).map(() => ({
+      x: Math.random() * WORLD_W, y: Math.random() * WORLD_H,
+      r: 1 + Math.random() * 3.5, speed: 0.2 + Math.random() * 0.7, wobble: Math.random() * Math.PI * 2
+    }));
+    const bubGroup = world.append("g");
+    bubGroup.selectAll(".bub").data(bubData).enter().append("circle").attr("class","bub")
+      .attr("cx", d => d.x).attr("cy", d => d.y).attr("r", d => d.r)
+      .attr("fill","rgba(160,220,255,0.1)").attr("stroke","rgba(160,220,255,0.15)").attr("stroke-width",0.5);
+
+    // ─── PLANKTON ───
+    const plankData = d3.range(150).map(() => ({
+      x: Math.random() * WORLD_W, y: Math.random() * WORLD_H,
+      r: 0.3 + Math.random() * 1, drift: Math.random() * 0.3, phase: Math.random() * Math.PI * 2
+    }));
+    const plankGroup = world.append("g");
+    plankGroup.selectAll(".pk").data(plankData).enter().append("circle").attr("class","pk")
+      .attr("cx", d => d.x).attr("cy", d => d.y).attr("r", d => d.r).attr("fill","rgba(200,240,255,0.1)");
+
+    // ─── LEVEL LABELS ───
+    const labelGroup = world.append("g");
+    [
+      [200, 300, "Level 1 — Coral Reef", "rgba(100,180,255,0.2)"],
+      [200, 2100, "Level 2 — Deep Zone", "rgba(80,140,200,0.15)"],
+      [200, 3700, "Level 3 — The Abyss", "rgba(80,220,180,0.15)"]
+    ].forEach(([x, y, text, color]) => {
+      labelGroup.append("text").attr("x", x).attr("y", y)
+        .text(text).attr("fill", color).attr("font-size", 28).attr("font-family", "'Segoe UI', sans-serif")
+        .attr("letter-spacing", 2).attr("font-weight", 300);
+    });
+
+    // ─── CREATURES ───
+    const creaturesGroup = world.append("g");
+    const allCreatures = [];
+
+    function makeDraggable(group, data) {
+      const drag = d3.drag()
+        .on("start", () => { data.dragging = true; })
+        .on("drag", (event) => {
+          const t = d3.zoomTransform(svg.node());
+          data.tx = (event.sourceEvent.clientX - t.x) / t.k;
+          data.ty = (event.sourceEvent.clientY - t.y) / t.k;
+        })
+        .on("end", () => { data.dragging = false; });
+      group.call(drag);
+      group.on("mousedown.zoom touchstart.zoom", null);
+    }
+
+    function makeGoldfish(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"fish" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      g.append("path").attr("class","tail").attr("d","M-55,-28 Q-90,-5 -55,0 Q-90,5 -55,28").attr("fill","#e8802a");
+      g.append("ellipse").attr("rx",65).attr("ry",32).attr("fill","url(#goldfish)");
+      g.append("ellipse").attr("cx",5).attr("cy",8).attr("rx",40).attr("ry",16).attr("fill","rgba(255,230,160,0.2)");
+      g.append("path").attr("class","dorsal").attr("d","M-15,-30 Q-5,-58 10,-44 Q18,-37 25,-30").attr("fill","#e8802a");
+      g.append("circle").attr("cx",32).attr("cy",-6).attr("r",9).attr("fill","white");
+      g.append("circle").attr("cx",34).attr("cy",-6).attr("r",5).attr("fill","#1a1a2e");
+      g.append("circle").attr("cx",35.5).attr("cy",-7.5).attr("r",2).attr("fill","rgba(255,255,255,0.7)");
+      g.append("path").attr("d","M52,4 Q57,9 50,10").attr("stroke","#b05515").attr("stroke-width",1.5).attr("fill","none");
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makeShark(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"shark" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      g.append("path").attr("class","tail").attr("d","M-110,-40 Q-155,0 -110,40").attr("fill","#4a5a6a");
+      g.append("ellipse").attr("rx",120).attr("ry",40).attr("fill","url(#sharkBody)");
+      g.append("ellipse").attr("cx",10).attr("cy",12).attr("rx",80).attr("ry",20).attr("fill","rgba(200,210,220,0.12)");
+      g.append("path").attr("class","dorsal").attr("d","M-10,-38 Q5,-80 25,-38").attr("fill","#5a6a7a");
+      g.append("path").attr("d","M80,5 L120,0 L80,-5").attr("fill","#5a6a7a");
+      g.append("circle").attr("cx",70).attr("cy",-10).attr("r",7).attr("fill","#1a1a2a");
+      g.append("circle").attr("cx",71).attr("cy",-11).attr("r",2.5).attr("fill","rgba(255,255,255,0.4)");
+      [40,48,56].forEach(gx => g.append("line").attr("x1",gx).attr("y1",-8).attr("x2",gx).attr("y2",12).attr("stroke","rgba(0,0,0,0.2)").attr("stroke-width",1.5));
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makeOctopus(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"octo" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI + Math.PI * 0.05;
+        const tx = Math.cos(angle) * 20;
+        g.append("path").attr("class","tentacle")
+          .attr("d",`M${tx},30 Q${tx + Math.cos(angle)*40},80 ${tx + Math.cos(angle)*30},110`)
+          .attr("stroke","#a33a6a").attr("stroke-width",5-i*0.3).attr("fill","none").attr("stroke-linecap","round")
+          .datum({ idx:i, angle });
+      }
+      g.append("ellipse").attr("rx",40).attr("ry",35).attr("fill","url(#octoBody)");
+      g.append("ellipse").attr("cy",-5).attr("rx",30).attr("ry",20).attr("fill","rgba(255,200,220,0.12)");
+      [-15,15].forEach(ex => {
+        g.append("circle").attr("cx",ex).attr("cy",-5).attr("r",10).attr("fill","white");
+        g.append("circle").attr("cx",ex+2).attr("cy",-5).attr("r",6).attr("fill","#1a1a2e");
+        g.append("circle").attr("cx",ex+3).attr("cy",-7).attr("r",2.5).attr("fill","rgba(255,255,255,0.6)");
+      });
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makeJellyfish(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"jelly" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#glow)");
+      for (let i = 0; i < 12; i++) {
+        const tx = -22 + i * 4;
+        g.append("path").attr("class","tendril")
+          .attr("d",`M${tx},20 Q${tx+3},50 ${tx-2},75`)
+          .attr("stroke",`rgba(150,180,255,${0.15+Math.random()*0.15})`).attr("stroke-width",1.2).attr("fill","none")
+          .datum({ idx:i, ox:tx });
+      }
+      g.append("path").attr("d","M-30,20 Q-35,-15 -20,-35 Q0,-50 20,-35 Q35,-15 30,20 Z").attr("fill","url(#jellyBody)");
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makeTurtle(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"turtle" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      g.append("path").attr("class","flipL").attr("d","M-30,-5 Q-65,-30 -50,-50").attr("stroke","#3a7a3a").attr("stroke-width",8).attr("fill","none").attr("stroke-linecap","round");
+      g.append("path").attr("class","flipR").attr("d","M-30,5 Q-65,30 -50,50").attr("stroke","#3a7a3a").attr("stroke-width",8).attr("fill","none").attr("stroke-linecap","round");
+      g.append("ellipse").attr("rx",50).attr("ry",35).attr("fill","url(#turtleBody)").attr("stroke","#2a5a2a").attr("stroke-width",2);
+      g.append("ellipse").attr("cx",55).attr("ry",12).attr("rx",18).attr("fill","#4a9a4a");
+      g.append("circle").attr("cx",62).attr("cy",-4).attr("r",4).attr("fill","#1a1a2e");
+      g.append("circle").attr("cx",63).attr("cy",-5).attr("r",1.5).attr("fill","rgba(255,255,255,0.5)");
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makeCrab(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"crab" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      [-1,1].forEach(side => {
+        [0,1,2].forEach(i => {
+          const lx = (10+i*10)*side;
+          g.append("path").attr("class","leg")
+            .attr("d",`M${lx},8 Q${lx+15*side},15 ${lx+22*side},20`)
+            .attr("stroke","#cc4422").attr("stroke-width",3).attr("fill","none").attr("stroke-linecap","round")
+            .datum({ side, idx:i });
+        });
+      });
+      g.append("ellipse").attr("rx",22).attr("ry",14).attr("fill","#cc4422");
+      [-8,8].forEach(ex => {
+        g.append("line").attr("x1",ex).attr("y1",-12).attr("x2",ex).attr("y2",-20).attr("stroke","#cc4422").attr("stroke-width",2);
+        g.append("circle").attr("cx",ex).attr("cy",-22).attr("r",3.5).attr("fill","#1a1a2e");
+      });
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makeEel(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"eel" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      g.append("path").attr("class","eelBody")
+        .attr("d","M-80,0 Q-50,-15 -20,0 Q10,15 40,0 Q70,-12 90,0")
+        .attr("stroke","url(#eelBody)").attr("stroke-width",14).attr("fill","none").attr("stroke-linecap","round");
+      g.append("ellipse").attr("cx",90).attr("ry",8).attr("rx",12).attr("fill","#6a8a40");
+      g.append("circle").attr("cx",95).attr("cy",-3).attr("r",4).attr("fill","#1a1a2e");
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makeTropicalFish(cx, cy, c1, c2) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"fish" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      g.append("polygon").attr("points","-25,-12 -42,0 -25,12").attr("fill",c2);
+      g.append("ellipse").attr("rx",30).attr("ry",18).attr("fill",c1);
+      g.append("path").attr("class","dorsal").attr("d","M-5,-17 Q2,-30 12,-17").attr("fill",c2);
+      g.append("circle").attr("cx",16).attr("cy",-3).attr("r",5).attr("fill","white");
+      g.append("circle").attr("cx",17).attr("cy",-3).attr("r",3).attr("fill","#1a1a2e");
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makePuffer(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"puffer" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      g.append("circle").attr("r",30).attr("fill","#e8c44a");
+      d3.range(14).forEach(i => {
+        const a = (i/14)*Math.PI*2;
+        g.append("line").attr("x1",Math.cos(a)*28).attr("y1",Math.sin(a)*28)
+          .attr("x2",Math.cos(a)*36).attr("y2",Math.sin(a)*36).attr("stroke","#c8a430").attr("stroke-width",1.5);
+      });
+      g.append("polygon").attr("points","-28,-5 -38,0 -28,5").attr("fill","#c8a430");
+      g.append("circle").attr("cx",12).attr("cy",-8).attr("r",7).attr("fill","white");
+      g.append("circle").attr("cx",13).attr("cy",-8).attr("r",4).attr("fill","#1a1a2e");
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    function makeAnglerfish(cx, cy) {
+      const d = { x:cx, y:cy, tx:cx, ty:cy, dragging:false, facing:1, type:"angler" };
+      const g = creaturesGroup.append("g").attr("class","creature").attr("filter","url(#shadow)");
+      g.append("ellipse").attr("rx",50).attr("ry",35).attr("fill","#2a2040");
+      g.append("ellipse").attr("cx",5).attr("cy",8).attr("rx",35).attr("ry",18).attr("fill","rgba(60,40,80,0.3)");
+      g.append("path").attr("d","M30,-15 Q35,-50 40,-55").attr("stroke","#3a3050").attr("stroke-width",2).attr("fill","none");
+      g.append("circle").attr("cx",40).attr("cy",-58).attr("r",8).attr("fill","rgba(150,255,200,0.8)").attr("filter","url(#glow)").attr("class","lure");
+      g.append("path").attr("d","M35,15 Q50,20 45,5 Q55,15 45,25 Q50,22 35,15").attr("fill","#1a1030").attr("stroke","rgba(200,180,255,0.15)").attr("stroke-width",0.5);
+      g.append("circle").attr("cx",25).attr("cy",-8).attr("r",10).attr("fill","#eee");
+      g.append("circle").attr("cx",27).attr("cy",-8).attr("r",6).attr("fill","#880000");
+      g.append("circle").attr("cx",28).attr("cy",-9).attr("r",2).attr("fill","rgba(255,255,255,0.5)");
+      g.append("polygon").attr("points","-45,-10 -60,0 -45,10").attr("fill","#2a2040");
+      d.el = g; makeDraggable(g, d); allCreatures.push(d);
+    }
+
+    // ─── SPAWN ───
+    // Level 1 — Coral Reef (y: 200–1700)
+    makeGoldfish(400, 500); makeGoldfish(900, 900); makeGoldfish(1300, 700);
+    makeTropicalFish(300, 1100, "#5ba4cf", "#3d7fb5");
+    makeTropicalFish(600, 400, "#cf5b7a", "#a34460");
+    makeTropicalFish(1000, 1300, "#a77bdb", "#8560b0");
+    makeTropicalFish(1500, 600, "#8bcf5b", "#6aaa42");
+    makeTropicalFish(2200, 800, "#cfb45b", "#aa9040");
+    makeTropicalFish(2800, 500, "#cf5b7a", "#a34460");
+    makeTropicalFish(3800, 1000, "#5ba4cf", "#3d7fb5");
+    makeTropicalFish(4500, 700, "#a77bdb", "#8560b0");
+    makeTropicalFish(5500, 900, "#8bcf5b", "#6aaa42");
+    makeTropicalFish(6200, 600, "#cfb45b", "#aa9040");
+    makeJellyfish(500, 350); makeJellyfish(1800, 1200); makeJellyfish(4000, 500);
+    makePuffer(1200, 1400); makePuffer(3200, 800);
+    makeTurtle(2500, 600); makeTurtle(5000, 400);
+    makeCrab(700, 1680); makeCrab(1600, 1680); makeCrab(3000, 1680); makeCrab(4800, 1680);
+
+    // Level 2 — Deep Zone (y: 1900–3300)
+    makeShark(1000, 2200); makeShark(3000, 2600); makeShark(5500, 2100);
+    makeOctopus(800, 2800); makeOctopus(2500, 2400); makeOctopus(4500, 2900);
+    makeEel(1500, 3100); makeEel(3500, 2200); makeEel(5000, 2800);
+    makeTurtle(2000, 2000); makeTurtle(4000, 2500);
+    makeGoldfish(1800, 2600); makeGoldfish(4200, 2300);
+    makeTropicalFish(2800, 2100, "#5ba4cf", "#3d7fb5");
+    makeTropicalFish(5800, 2400, "#cf5b7a", "#a34460");
+    makeJellyfish(1200, 2500); makeJellyfish(3800, 2800); makeJellyfish(6000, 2200);
+    makeCrab(2200, 3280); makeCrab(4600, 3280);
+
+    // Level 3 — The Abyss (y: 3500–4850)
+    makeAnglerfish(800, 4000); makeAnglerfish(3000, 4200); makeAnglerfish(5500, 3900);
+    makeAnglerfish(2000, 4500); makeAnglerfish(6200, 4300);
+    makeJellyfish(500, 3800); makeJellyfish(1500, 4300); makeJellyfish(2500, 3700);
+    makeJellyfish(3500, 4500); makeJellyfish(4500, 3900); makeJellyfish(5800, 4100);
+    makeOctopus(1200, 4600); makeOctopus(4000, 4400);
+    makeEel(600, 4700); makeEel(3200, 3800); makeEel(5000, 4600);
+    makeShark(2200, 3900); makeShark(4800, 4200);
+    makeCrab(1800, 4800); makeCrab(3800, 4800); makeCrab(5600, 4800);
+
+    // ─── MINIMAP ───
+    const mmCanvas = document.getElementById("minimap");
+    const mmCtx = mmCanvas.getContext("2d");
+    const mmW = 200, mmH = 120;
+    const mmSX = mmW / WORLD_W, mmSY = mmH / WORLD_H;
+
+    function updateMinimap() {
+      mmCtx.clearRect(0, 0, mmW, mmH);
+
+      // depth bands
+      mmCtx.fillStyle = "#0d2844"; mmCtx.fillRect(0, 0, mmW, mmH * 0.36);
+      mmCtx.fillStyle = "#071830"; mmCtx.fillRect(0, mmH * 0.36, mmW, mmH * 0.32);
+      mmCtx.fillStyle = "#030c18"; mmCtx.fillRect(0, mmH * 0.68, mmW, mmH * 0.32);
+
+      // shelves
+      mmCtx.fillStyle = "#1a2a1a";
+      mmCtx.fillRect(0, 1750 * mmSY, mmW, 3);
+      mmCtx.fillRect(0, 3350 * mmSY, mmW, 3);
+
+      // walls
+      mmCtx.fillStyle = "#0a0a0c";
+      mmCtx.fillRect(0, 0, mmW, 3);
+      mmCtx.fillStyle = "#1a2e20";
+      mmCtx.fillRect(0, mmH - 3, mmW, 3);
+
+      // pillars
+      mmCtx.fillStyle = "rgba(20,20,30,0.7)";
+      pillarXs.forEach(px => mmCtx.fillRect(px * mmSX - 1, 0, 3, mmH));
+
+      // creatures
+      const colors = { fish:"#f4a940", shark:"#8899aa", octo:"#d45e8a", jelly:"rgba(160,200,255,0.7)", turtle:"#5aaa5a", crab:"#cc4422", eel:"#6a8a40", puffer:"#e8c44a", angler:"#aa66ff" };
+      allCreatures.forEach(c => {
+        mmCtx.fillStyle = colors[c.type] || "#fff";
+        mmCtx.beginPath();
+        mmCtx.arc(c.x * mmSX, c.y * mmSY, c.type === "shark" ? 3 : 2, 0, Math.PI * 2);
+        mmCtx.fill();
+      });
+
+      // viewport
+      const t = d3.zoomTransform(svg.node());
+      mmCtx.strokeStyle = "rgba(140,200,255,0.5)";
+      mmCtx.lineWidth = 1;
+      mmCtx.strokeRect(-t.x / t.k * mmSX, -t.y / t.k * mmSY, W / t.k * mmSX, H / t.k * mmSY);
+    }
+
+    // ─── ANIMATION ───
+    let t = 0;
+
+    function animate() {
+      t += 0.018;
+
+      allCreatures.forEach((c, idx) => {
+        if (!c.dragging) {
+          const speed = c.type==="shark"?0.15 : c.type==="jelly"?0.08 : c.type==="turtle"?0.12 : c.type==="crab"?0.04 : c.type==="angler"?0.06 : c.type==="eel"?0.1 : 0.2;
+          const range = c.type==="shark"?250 : c.type==="jelly"?80 : c.type==="turtle"?180 : c.type==="crab"?40 : c.type==="angler"?100 : 120;
+          const phase = idx * 1.7;
+          c.tx += Math.sin(t * speed + phase) * range * 0.004;
+          c.ty += Math.cos(t * speed * 0.7 + phase) * range * 0.002;
+          c.tx = Math.max(80, Math.min(WORLD_W - 80, c.tx));
+          c.ty = Math.max(180, Math.min(WORLD_H - 180, c.ty));
+        }
+
+        c.x += (c.tx - c.x) * 0.04;
+        c.y += (c.ty - c.y) * 0.04;
+
+        const dx = c.tx - c.x;
+        if (Math.abs(dx) > 0.3) c.facing = dx > 0 ? 1 : -1;
+        const tilt = Math.atan2(c.ty - c.y, c.tx - c.x) * (180 / Math.PI) * 0.2;
+
+        if (c.type === "jelly" || c.type === "octo") {
+          c.el.attr("transform", `translate(${c.x},${c.y})`);
+        } else if (c.type === "crab") {
+          c.el.attr("transform", `translate(${c.x},${c.y})`);
+        } else {
+          c.el.attr("transform", `translate(${c.x},${c.y}) scale(${c.facing},1) rotate(${c.facing>0?tilt:-tilt})`);
+        }
+
+        if (c.type === "fish" || c.type === "puffer") {
+          const wag = Math.sin(t * 8 + idx) * 10;
+          const tail = c.el.select(".tail");
+          if (!tail.empty()) tail.attr("d", `M-55,-28 Q${-90+wag},-5 -55,0 Q${-90+wag},5 -55,28`);
+        }
+        if (c.type === "shark") {
+          c.el.select(".tail").attr("d", `M-110,-40 Q${-155+Math.sin(t*5+idx)*18},0 -110,40`);
+          c.el.select(".dorsal").attr("d", `M-10,-38 Q${5+Math.sin(t*2.5+idx)*5},-80 25,-38`);
+        }
+        if (c.type === "octo") {
+          c.el.selectAll(".tentacle").each(function(td) {
+            const s1 = Math.sin(t*2+td.idx*0.8)*15, s2 = Math.cos(t*1.5+td.idx*1.1)*10;
+            const tx = Math.cos(td.angle)*20;
+            d3.select(this).attr("d", `M${tx},30 Q${tx+s1},${60+s2} ${tx+Math.cos(td.angle)*30+s1*0.5},${85+s2*0.5}`);
+          });
+        }
+        if (c.type === "jelly") {
+          const pulse = Math.sin(t*3+idx)*4;
+          c.el.select("path:last-of-type").attr("d", `M${-30+pulse},20 Q${-35+pulse},-15 -20,-35 Q0,-50 20,-35 Q${35-pulse},-15 ${30-pulse},20 Z`);
+          c.el.selectAll(".tendril").each(function(td) {
+            const sw = Math.sin(t*2+td.idx*0.5)*8;
+            d3.select(this).attr("d", `M${td.ox},20 Q${td.ox+sw},${55+pulse} ${td.ox-2+sw*0.5},${75+pulse*2}`);
+          });
+        }
+        if (c.type === "turtle") {
+          const fa = Math.sin(t*3+idx)*15;
+          c.el.select(".flipL").attr("d", `M-30,-5 Q-65,${-30+fa} -50,${-50+fa}`);
+          c.el.select(".flipR").attr("d", `M-30,5 Q-65,${30-fa} -50,${50-fa}`);
+        }
+        if (c.type === "eel") {
+          const s1 = Math.sin(t*3+idx)*18, s2 = Math.cos(t*2.5+idx)*12;
+          c.el.select(".eelBody").attr("d", `M-80,0 Q-50,${-15+s1} -20,0 Q10,${15+s2} 40,0 Q70,${-12+s1*0.5} 90,0`);
+        }
+        if (c.type === "crab") {
+          c.el.selectAll(".leg").each(function(ld) {
+            const sw = Math.sin(t*4+ld.idx*1.5)*5*ld.side;
+            const lx = (10+ld.idx*10)*ld.side;
+            d3.select(this).attr("d", `M${lx},8 Q${lx+(15+sw)*ld.side},${15+Math.abs(sw)} ${lx+22*ld.side},${20+sw}`);
+          });
+        }
+        if (c.type === "angler") {
+          const lureGlow = 0.5 + Math.sin(t*4+idx)*0.4;
+          c.el.select(".lure").attr("opacity", lureGlow).attr("r", 6 + Math.sin(t*3+idx)*3);
+        }
+      });
+
+      // bubbles
+      bubGroup.selectAll(".bub").attr("cy", d => {
+        d.y -= d.speed; if (d.y < -50) { d.y = WORLD_H+50; d.x = Math.random()*WORLD_W; } return d.y;
+      }).attr("cx", d => d.x + Math.sin(d.y*0.02+d.wobble)*5);
+
+      // seaweed
+      seaweedGroup.selectAll(".seaweed").each(function(d) {
+        const sway = Math.sin(t*1.2+d.phase)*8;
+        const line = d3.line().x(p => p.x+p.sway+sway*(1-p.y/(-d.pts.length*14))).y(p => p.y).curve(d3.curveBasis);
+        d3.select(this).attr("d", line(d.pts.map(p => ({...p, x:p.x+d.baseOff}))));
+      });
+
+      // plankton
+      plankGroup.selectAll(".pk")
+        .attr("cx", d => { d.x += Math.sin(t*0.8+d.phase)*d.drift; return d.x; })
+        .attr("cy", d => { d.y -= 0.06; if (d.y < -50) { d.y = WORLD_H+50; d.x = Math.random()*WORLD_W; } return d.y; })
+        .attr("opacity", d => 0.06 + Math.sin(t*1.5+d.phase)*0.05);
+
+      bioGroup.selectAll(".bio").attr("opacity", function(d) { return 0.25+Math.sin(t*1.2+d.phase)*0.2; });
+      lightsGroup.selectAll(".shaft").attr("opacity", (_,i) => 0.015+Math.sin(t*0.5+i*0.7)*0.01);
+
+      requestAnimationFrame(animate);
+    }
+
+    // ─── INIT ───
+    minimapReady = true;
+    svg.call(zoomBehavior);
+
+    // start at max zoom, centered on level 1 vertically
+    const startScale = MAX_ZOOM;
+    const startY = H / 2 - 900 * startScale;
+    svg.call(zoomBehavior.transform, d3.zoomIdentity
+      .translate(0, startY)
+      .scale(startScale));
+
+    const fitScale = Math.min(W / WORLD_W, H / WORLD_H) * 0.9;
+    const fitX = (W - WORLD_W * fitScale) / 2;
+    const fitY = (H - WORLD_H * fitScale) / 2;
+
+    d3.select("#zoomIn").on("click", () => {
+      const cur = d3.zoomTransform(svg.node()).k;
+      if (cur < MAX_ZOOM) svg.transition().duration(400).call(zoomBehavior.scaleBy, 1.5);
+    });
+    d3.select("#zoomOut").on("click", () => {
+      const cur = d3.zoomTransform(svg.node()).k;
+      if (cur > MIN_ZOOM) svg.transition().duration(400).call(zoomBehavior.scaleBy, 0.67);
+    });
+    d3.select("#zoomFit").on("click", () => {
+      svg.transition().duration(600).call(zoomBehavior.transform, d3.zoomIdentity.translate(fitX, fitY).scale(fitScale));
+    });
+
+    animate();
+    updateMinimap();
+    setInterval(updateMinimap, 200);
+
+    setTimeout(() => d3.select("#hint").style("opacity", 0), 6000);
+    window.addEventListener("resize", () => svg.attr("width", window.innerWidth).attr("height", window.innerHeight));
+  })();
+  </script>
+</body>
+</html>
