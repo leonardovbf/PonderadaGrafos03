@@ -1,4 +1,4 @@
-# Ponderada de Grafos 03 — Caverna Submarina Interativa
+# Ponderada de Grafos 03: Caverna Submarina Interativa
 
 ## Descrição
 
@@ -48,10 +48,10 @@ Todas as criaturas possuem movimentação autônoma (wander) com velocidade e al
 
 ## Tecnologias
 
-- **D3.js v7** — bindagem de dados, criação de SVG, zoom/pan, drag behavior.
-- **SVG** — gradientes (radial/linear), filtros (drop-shadow, glow), paths procedurais.
-- **Canvas 2D** — renderização do minimapa.
-- **HTML/CSS** — layout, backdrop-filter, controles de UI.
+- **D3.js v7:** bindagem de dados, criação de SVG, zoom/pan, drag behavior.
+- **SVG:** gradientes (radial/linear), filtros (drop-shadow, glow), paths procedurais.
+- **Canvas 2D:** renderização do minimapa.
+- **HTML/CSS:** layout, backdrop-filter, controles de UI.
 
 ## Como executar
 
